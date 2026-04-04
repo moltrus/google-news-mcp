@@ -22,7 +22,7 @@ A **Model Context Protocol (MCP)** server that exposes **Google News RSS feeds**
 | `get_search_feed` | Search news with advanced operators | `query`, `language`, `country` |
 | `get_geo_feed` | Location-specific news | `location`, `language`, `country` |
 | `get_topic_feed` | Trending topic by ID | `topic_id`, `language`, `country` |
-| `decode_google_news_url` | Decode Google News URLs ⭐ **NEW** | `urls` (list) |
+| `decode_google_news_url` | Decode Google News URLs | `urls` (list) |
 | `list_categories` | Available news categories | (none) |
 
 **Total: 7 tools**
