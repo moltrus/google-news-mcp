@@ -29,6 +29,7 @@ import httpx
 from dotenv import load_dotenv
 from googlenewsdecoder import gnewsdecoder
 from mcp.server.fastmcp import FastMCP
+from toon import encode as toon_encode
 
 load_dotenv()
 
@@ -42,7 +43,33 @@ GOOGLE_NEWS_BASE = "https://news.google.com/rss"
 LANGUAGE = os.getenv("GOOGLE_NEWS_LANGUAGE", "en")
 COUNTRY = os.getenv("GOOGLE_NEWS_COUNTRY", "US")
 
+RESPONSE_FORMAT = os.getenv("RESPONSE_FORMAT", "json").lower()
+if RESPONSE_FORMAT not in ("json", "toon"):
+    RESPONSE_FORMAT = "json"
+
 _url_decode_cache: dict[str, str] = {}
+
+
+# ---------------------------------------------------------------------------
+# Response formatting utilities
+# ---------------------------------------------------------------------------
+
+def _format_response(data: Any) -> Any:
+    """
+    Format response data according to RESPONSE_FORMAT setting.
+    """
+    if RESPONSE_FORMAT == "toon":
+        try:
+            toon_str = toon_encode(data, {
+                "indent": 2,
+                "delimiter": ","
+            })
+            return toon_str
+        except Exception as e:
+            logger.warning("TOON encoding failed, falling back to JSON: %s", e)
+            return data
+    else:
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +212,7 @@ mcp = FastMCP(
 async def get_top_headlines(
     language: str | None = None,
     country: str | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """
     Get top headlines for a country.
 
@@ -200,7 +227,7 @@ async def get_top_headlines(
     ctry = country or COUNTRY
 
     url = f"{GOOGLE_NEWS_BASE}?hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
-    return await _fetch_rss_feed(url)
+    return _format_response(await _fetch_rss_feed(url))
 
 
 @mcp.tool()
@@ -208,7 +235,7 @@ async def get_category_feed(
     category: str,
     language: str | None = None,
     country: str | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """
     Get headlines for a specific category.
 
@@ -229,7 +256,7 @@ async def get_category_feed(
         f"{GOOGLE_NEWS_BASE}/headlines/section/topic/{category_upper}"
         f"?hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
     )
-    return await _fetch_rss_feed(url)
+    return _format_response(await _fetch_rss_feed(url))
 
 
 @mcp.tool()
@@ -237,7 +264,7 @@ async def get_search_feed(
     query: str,
     language: str | None = None,
     country: str | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """
     Search Google News and get RSS feed for results.
 
@@ -268,7 +295,7 @@ async def get_search_feed(
         f"{GOOGLE_NEWS_BASE}/search?q={encoded_query}"
         f"&hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
     )
-    return await _fetch_rss_feed(url)
+    return _format_response(await _fetch_rss_feed(url))
 
 
 @mcp.tool()
@@ -276,7 +303,7 @@ async def get_geo_feed(
     location: str,
     language: str | None = None,
     country: str | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """
     Get news specific to a geographic location.
 
@@ -297,11 +324,11 @@ async def get_geo_feed(
         f"{GOOGLE_NEWS_BASE}/headlines/section/geo/{encoded_location}"
         f"?hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
     )
-    return await _fetch_rss_feed(url)
+    return _format_response(await _fetch_rss_feed(url))
 
 
 @mcp.tool()
-async def decode_google_news_url(urls: list[str]) -> dict[str, list[dict[str, str]]]:
+async def decode_google_news_url(urls: list[str]) -> Any:
     """
     Convert multiple Google News URLs to their actual article URLs.
 
@@ -326,20 +353,20 @@ async def decode_google_news_url(urls: list[str]) -> dict[str, list[dict[str, st
     tasks = [decode_one(url) for url in urls]
     decoded_urls = await asyncio.gather(*tasks)
     
-    return {
+    return _format_response({
         "decoded_urls": decoded_urls,
-    }
+    })
 
 
 @mcp.tool()
-def list_categories() -> dict[str, list[str]]:
+def list_categories() -> Any:
     """
     List available news categories for get_category_feed.
 
     Returns:
         Dict with list of category names
     """
-    return {
+    return _format_response({
         "categories": [
             "WORLD",
             "NATION",
@@ -350,7 +377,7 @@ def list_categories() -> dict[str, list[str]]:
             "SCIENCE",
             "HEALTH",
         ]
-    }
+    })
 
 
 @mcp.tool()
@@ -358,7 +385,7 @@ async def get_topic_feed(
     topic_id: str,
     language: str | None = None,
     country: str | None = None,
-) -> dict[str, Any]:
+) -> Any:
     """
     Get news for a specific Google News topic ID.
 
@@ -379,7 +406,7 @@ async def get_topic_feed(
         f"{GOOGLE_NEWS_BASE}/topics/{topic_id}"
         f"?hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
     )
-    return await _fetch_rss_feed(url)
+    return _format_response(await _fetch_rss_feed(url))
 
 
 # ---------------------------------------------------------------------------
