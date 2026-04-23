@@ -8,8 +8,10 @@ A **Model Context Protocol (MCP)** server that exposes **Google News RSS feeds**
 **Smart Caching** - LRU cache (1024 entries) for fast repeated URL decodings  
 **Batch URL Decoding** - Decode multiple Google News URLs in parallel  
 **Clean Summaries** - Extracts plain text from HTML summaries with decoded article links  
+**Token-Oriented Object Notation (TOON)** - Support for a compact, token-efficient response format (30-60% reduction)  
 **Multi-language Support** - Configure for any language/country combination  
 **Advanced Search** - Full support for Google News search operators (site:, when:, intitle:, etc.)  
+**Page Extraction** - Fetch and summarize full article content using [Jina Reader](https://jina.ai/reader/) and [Groq](https://groq.com/)
 
 ---
 
@@ -24,8 +26,9 @@ A **Model Context Protocol (MCP)** server that exposes **Google News RSS feeds**
 | `get_topic_feed` | Trending topic by ID | `topic_id`, `language`, `country` |
 | `decode_google_news_url` | Decode Google News URLs | `urls` (list) |
 | `list_categories` | Available news categories | (none) |
+| `fetch_content` | Fetch and summarize page content | `url`, `summarize` |
 
-**Total: 7 tools**
+**Total: 8 tools**
 
 ---
 
@@ -71,12 +74,21 @@ This installs the command-line entry point system-wide, allowing you to run `goo
 
 ### Configuration
 
-Create a `.env` file:
+Create a `.env` file based on [.env.example](.env.example):
 
 ```bash
-# Optional - defaults shown
+# RSS Preferences
 GOOGLE_NEWS_LANGUAGE=en
 GOOGLE_NEWS_COUNTRY=US
+
+# Response Optimization
+# Options: "json" (standard) or "toon" (token-optimized)
+RESPONSE_FORMAT=json
+
+# Fetching & Summarization
+JINA_API_KEY=your_jina_key
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=qwen/qwen3-32b
 ```
 
 ### Running the Server
@@ -209,6 +221,35 @@ get_geo_feed(location="New York")
 get_geo_feed(location="London", language="en")
 get_geo_feed(location="Tokyo", country="JP")
 ```
+
+---
+
+### fetch_content
+
+Fetch clean page content from a URL using Jina Reader API, with optional summarization via Groq.
+
+**Parameters:**
+- `url` (string, required): Absolute URL to fetch (must start with http:// or https://)
+- `summarize` (boolean, optional): If `true`, returns a concise summary via Groq and omits the full raw content to save tokens. Defaults to `false`.
+
+**Returns:**
+```json
+{
+  "url": "https://example.com/article",
+  "reader_url": "https://r.jina.ai/https://example.com/article",
+  "content": "Full article text...",
+  "summary": "Concise summary points...",
+  "summary_model": "qwen/qwen3-32b",
+  "summary_error": "Error message if summarization fails"
+}
+```
+
+**Notes:**
+- **Token Efficiency:** When `summarize` is `true`, the `content` field is automatically removed from the response to prevent context window bloat.
+- **Environment Variables:**
+  - `JINA_API_KEY`: Required for content extraction.
+  - `GROQ_API_KEY`: Required for summarization.
+  - `GROQ_MODEL`: Optional. Specific model to use (defaults to `qwen/qwen3-32b`).
 
 ---
 
@@ -370,6 +411,36 @@ get_category_feed(category="HEALTH")
 get_topic_feed(topic_id="CAAqJggKIiBDQkFTRWdvSUwyMHZNR3d5YldFeVpYVXVhVzV6U0FpQkFQAQ")
 ```
 
+### 8. Fetch and summarize a full article
+
+```
+fetch_content(url="https://techcrunch.com/article-url", summarize=true)
+```
+
+---
+
+## Token Efficiency & TOON
+
+This server supports **Token-Oriented Object Notation (TOON)**, a compact data format designed specifically for LLMs.
+
+### Why use TOON?
+Standard JSON can be verbose for LLMs due to repeated keys and punctuation. TOON reduces token usage by **30-60%** by:
+- Defining keys once for arrays of objects (tabular format).
+- Removing unnecessary braces, brackets, and quotes.
+- Using indentation and simple delimiters.
+
+### Configuration
+To enable TOON globally for all tool responses, set the following in your `.env`:
+```bash
+RESPONSE_FORMAT=toon
+```
+
+### Comparison
+
+| JSON (Verbose) | TOON (Compact) |
+| :--- | :--- |
+| `{"entries": [{"id": 1, "title": "A"}, {"id": 2, "title": "B"}]}` | `entries[2,]{id,title}:`<br>&nbsp;&nbsp;`1,A`<br>&nbsp;&nbsp;`2,B` |
+
 ---
 
 ## Limitations
@@ -377,9 +448,9 @@ get_topic_feed(topic_id="CAAqJggKIiBDQkFTRWdvSUwyMHZNR3d5YldFeVpYVXVhVzV6U0FpQkF
 1. **Result limit:** Google News RSS returns max ~100 articles per request
 2. **Sorting:** Default is relevance. Use `when:` filters for temporal ordering
 3. **Date precision:** Filters work on **daily basis**, not by hour/minute
-4. **Rate limiting:** No API keys needed, but Google News may throttle rapid requests
-5. **Availability:** Some regional/language combinations may have limited content
-6. **Topic IDs:** Must be discovered from Google News URLs; no lookup API
+4. **Rate limiting:** No API keys needed for RSS, but Jina Reader and Groq have their own limits/quotas
+5. **Content Extraction:** `fetch_content` depends on Jina Reader's ability to parse the target site
+7. **Topic IDs:** Must be discovered from Google News URLs; no lookup API
 
 ---
 

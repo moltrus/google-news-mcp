@@ -40,8 +40,16 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ---------------------------------------------------------------------------
 GOOGLE_NEWS_BASE = "https://news.google.com/rss"
+JINA_READER_BASE = "https://r.jina.ai"
 LANGUAGE = os.getenv("GOOGLE_NEWS_LANGUAGE", "en")
 COUNTRY = os.getenv("GOOGLE_NEWS_COUNTRY", "US")
+JINA_API_KEY = os.getenv("JINA_API_KEY", "")
+JINA_ENGINE = os.getenv("JINA_READER_ENGINE", "cf-browser-rendering")
+JINA_RETAIN_IMAGES = os.getenv("JINA_READER_RETAIN_IMAGES", "none")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
+GROQ_SUMMARY_MAX_TOKENS = int(os.getenv("GROQ_SUMMARY_MAX_TOKENS", "400"))
 
 RESPONSE_FORMAT = os.getenv("RESPONSE_FORMAT", "json").lower()
 if RESPONSE_FORMAT not in ("json", "toon"):
@@ -160,7 +168,7 @@ async def _fetch_rss_feed(url: str) -> dict[str, Any]:
     feed = feedparser.parse(response.text)
 
     entries = []
-    
+
     async def process_entry(entry: Any) -> dict[str, Any]:
         link = entry.get("link", "")
 
@@ -189,6 +197,88 @@ async def _fetch_rss_feed(url: str) -> dict[str, Any]:
         "description": feed.feed.get("description", ""),
         "entries": entries,
     }
+
+
+async def _fetch_jina_content(url: str) -> dict[str, Any]:
+    """
+    Fetch page content via Jina Reader API and return clean text/markdown output.
+    """
+    normalized_url = url.strip()
+    if not normalized_url.startswith(("http://", "https://")):
+        return {"error": "url must start with http:// or https://", "url": url}
+
+    reader_url = f"{JINA_READER_BASE}/{quote(normalized_url, safe=':/?&=#%')}"
+    headers = {
+        "X-Engine": JINA_ENGINE,
+        "X-Retain-Images": JINA_RETAIN_IMAGES,
+    }
+
+    if JINA_API_KEY:
+        headers["Authorization"] = f"Bearer {JINA_API_KEY}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(reader_url, headers=headers, timeout=60.0, follow_redirects=True)
+            response.raise_for_status()
+
+        return {
+            "url": normalized_url,
+            "reader_url": reader_url,
+            "content": response.text,
+        }
+    except Exception as e:
+        return {
+            "url": normalized_url,
+            "reader_url": reader_url,
+            "error": f"Failed to fetch content via Jina Reader: {type(e).__name__}: {e}",
+            "content": ""
+        }
+
+
+async def _summarize_with_groq(content: str) -> dict[str, str]:
+    """
+    Summarize content using a Groq model via the OpenAI-compatible API.
+    """
+    if not GROQ_API_KEY:
+        return {"error": "GROQ_API_KEY is required when summarize=True", "model": ""}
+
+    if not content.strip():
+        return {"error": "No content to summarize", "model": GROQ_MODEL}
+
+    prompt = (
+        "Summarize the following web content in concise bullet points. "
+        "Include key entities, notable claims, and important context. "
+        "Do not invent details.\n\n"
+        f"Content:\n{content}"
+    )
+
+    url = f"{GROQ_BASE_URL.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a precise summarization assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": GROQ_SUMMARY_MAX_TOKENS,
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+
+        summary = data["choices"][0]["message"]["content"].strip()
+        return {"summary": summary, "model": GROQ_MODEL}
+    except Exception as e:
+        logger.warning("Groq summarization failed on model %s: %s", GROQ_MODEL, e)
+        return {"error": f"Failed to summarize content with Groq: {type(e).__name__}: {e}", "model": ""}
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +318,39 @@ async def get_top_headlines(
 
     url = f"{GOOGLE_NEWS_BASE}?hl={lang}&gl={ctry}&ceid={ctry}:{lang}"
     return _format_response(await _fetch_rss_feed(url))
+
+
+@mcp.tool()
+async def fetch_content(
+    url: str,
+    summarize: bool = False,
+) -> Any:
+    """
+    Fetch clean page content from a URL using Jina Reader API.
+
+    Args:
+        url: Absolute URL to fetch (must start with http:// or https://)
+        summarize: If True, summarize fetched content using the configured Groq model and omit the full raw content.
+
+    Returns:
+        Dict with original URL, reader URL, and either full content (if summarize=False) or a concise summary (if summarize=True).
+    """
+    result = await _fetch_jina_content(url)
+
+    if summarize and not result.get("error"):
+        summary_result = await _summarize_with_groq(
+            result.get("content", "")
+        )
+        # Remove the full content if summarization was requested
+        del result["content"]
+
+        if "error" in summary_result:
+            result["summary_error"] = summary_result["error"]
+        else:
+            result["summary"] = summary_result.get("summary")
+            result["summary_model"] = summary_result.get("model")
+
+    return _format_response(result)
 
 
 @mcp.tool()
@@ -349,10 +472,10 @@ async def decode_google_news_url(urls: list[str]) -> Any:
             "original_url": url,
             "decoded_url": decoded,
         }
-    
+
     tasks = [decode_one(url) for url in urls]
     decoded_urls = await asyncio.gather(*tasks)
-    
+
     return _format_response({
         "decoded_urls": decoded_urls,
     })
